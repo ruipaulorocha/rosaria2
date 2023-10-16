@@ -1,3 +1,4 @@
+#include <Aria/ArRobot.h>
 #include <string>
 #include <chrono>
 #include <sstream>
@@ -38,81 +39,36 @@ using namespace std::placeholders;     // for _1, _2
 #endif
 
 
-RosAria2Node::Parameters::Ptr RosAria2Node::Parameters::create() {
-    return Ptr(new Parameters());
+RosAria2Node::Parameters::Parameters(rclcpp::Node* node) :
+    _param_subscriber(std::make_shared< rclcpp::ParameterEventHandler >(node)),
+    serial_port(node,  _param_subscriber, "seria_port", "/dev/ttyUSB0"),
+    serial_baud(node, _param_subscriber, "serial_baud", 9600),
+    sonar_enabled(node, _param_subscriber, "sonar_enabled", false),
+    publish_sonar(node, _param_subscriber, "publish_sonar", false),
+    publish_sonar_pointcloud2(node, _param_subscriber, "publish_sonar_pointcloud2", false),
+    publish_aria_lasers(node, _param_subscriber, "publish_aria_lasers", false),
+    publish_motors_state(node, _param_subscriber, "publish_motors_state", false),
+    debug_aria(node, _param_subscriber, "debug_aria", false),
+    aria_log_filename(node, _param_subscriber, "aria_log_filename", "Aria.log"),
+    ticks_mm(node, _param_subscriber, "ticks_mm", -1),
+    drift_factor(node, _param_subscriber, "drif_factor", -1),
+    rev_count(node, _param_subscriber, "rev_count", -1) {
+        /* ... */
+
+        // parameters are declared on ROS parameter server; pre-set values on parameter server are preserved/override default values
 }
-
-
-RosAria2Node::Parameters::Ptr RosAria2Node::Parameters::fetch(const rclcpp::Node& node) {
-    auto params = Parameters::create();
-    // @runtime parameters (fetched from ROS parameter server)
-    // port
-    node.get_parameter_or("port", params->serial_port, std::string("/dev/ttyUSB0"));
-    RCLCPP_INFO(this->get_logger(), "set port: [%s]", serial_port.c_str());
-    // baud rate
-    node.get_parameter_or("baud", params->serial_baud, 9600);
-    // handle debugging more elegantly
-    node.get_parameter_or("debug_aria", params->debug_aria, false); // default not to debug
-    node.get_parameter_or("aria_log_filename", params->aria_log_filename, std::string("Aria.log"));
-    // whether to connect to lasers using aria
-    node.get_parameter_or("publish_aria_lasers", params->publish_aria_lasers, false);
-    // Get frame_ids to use.
-    node.get_parameter_or("odom_frame", params->frame_id_odom, std::string("odom"));
-    node.get_parameter_or("base_link_frame", params->frame_id_base_link, std::string("base_link"));
-    node.get_parameter_or("bumpers_frame", params->frame_id_bumper, std::string("bumpers"));
-    node.get_parameter_or("sonar_frame", params->frame_id_sonar, std::string("sonar"));
-
-}
-
-
 
 
 RosAria2Node::RosAria2Node(const std::string& name) :
     rclcpp::Node(name),
-    // serial comm w/ robot
-    serial_port(""),
-    serial_baud(0),
-    // aria objects (ptrs)
-    conn(NULL),
-    laserConnector(NULL),
-    robot(NULL),
-    // configs (on/off)
-    sonar_enabled(true),
-    publish_sonar(true),
-    publish_sonar_pointcloud2(false),
-    publish_aria_lasers(true),
-    publish_motors_state(true),
-    debug_aria(false),
-    // robot calibration
-    TicksMM(-1), DriftFactor(-99999), RevCount(-1),
+    // runtime configuration handler
+    config(std::make_shared< RosAria2Node::Parameters >(this)),
     // control timeout (max delay between vel commands)
     cmdvel_timeout(ROSARIA2_DEFAULT_CMDVEL_TIMEOUT),
     // ...
     publish_cb(this, &RosAria2Node::publish) {
         // @todo check if Aria is running, initialize otherwise:
         //   Aria::init();
-
-        // @runtime parameters (fetched from ROS parameter server)
-        // port
-        this->get_parameter_or("port", serial_port, std::string("/dev/ttyUSB0"));
-        RCLCPP_INFO(this->get_logger(), "set port: [%s]", serial_port.c_str());
-        // baud rate
-        this->get_parameter_or("baud", serial_baud, 9600);
-        if (serial_baud != 0) {
-            RCLCPP_INFO(this->get_logger(), "set serial port baud rate %d", serial_baud);
-        } else {
-            RCLCPP_ERROR(this->get_logger(), "invalid serial port baud rate: %d, ", serial_baud);
-        }
-        // handle debugging more elegantly
-        this->get_parameter_or("debug_aria", debug_aria, false); // default not to debug
-        this->get_parameter_or("aria_log_filename", aria_log_filename, std::string("Aria.log"));
-        // whether to connect to lasers using aria
-        this->get_parameter_or("publish_aria_lasers", publish_aria_lasers, false);
-        // Get frame_ids to use.
-        this->get_parameter_or("odom_frame", frame_id_odom, std::string("odom"));
-        this->get_parameter_or("base_link_frame", frame_id_base_link, std::string("base_link"));
-        this->get_parameter_or("bumpers_frame", frame_id_bumper, std::string("bumpers"));
-        this->get_parameter_or("sonar_frame", frame_id_sonar, std::string("sonar"));
 
         // avertise publishers
         // @note about latching in ROS2 cf. https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Quality-of-Service-Settings.html#comparison-to-ros-1
@@ -134,7 +90,6 @@ RosAria2Node::RosAria2Node(const std::string& name) :
 
         // set initial state for (internal) message buffers
         motors_state.data = false;
-        publish_motors_state = false;
 
         // backup current time
         veltime = this->now();
@@ -156,110 +111,64 @@ int RosAria2Node::setup() {
     // Note, various objects are allocated here which are never deleted (freed), since Setup() is only supposed to be
     // called once per instance, and these objects need to persist until the process terminates. (won't it survive *after* the process terminates though?)
     // @todo refactor to use std::shared_ptr
-    robot = new ArRobot();
-    ArArgumentBuilder *args = new ArArgumentBuilder(); //  never freed
-    ArArgumentParser *argparser = new ArArgumentParser(args); // Warning never freed
-    argparser->loadDefaultArguments(); // adds any arguments given in /etc/Aria.args.  Useful on robots with unusual serial port or baud rate (e.g. pioneer lx)
+    robot = std::make_shared< ArRobot >();                               // should be instantiated on costruction of class
+    auto args = std::make_shared< ArArgumentBuilder >();                 // no need to be pointers, only used locally, but could be smart pointer members to ensure required lifetime //  never freed
+    auto argparser = std::make_shared< ArArgumentParser >(args.get());   // no need to be pointers, only used locally, but could be smart pointer members to ensure required lifetime // Warning never freed
 
-    // Now add any parameters given via ros params (see RosAriaNode constructor):
+    // adds any arguments given in /etc/Aria.args.
+    // @note    useful on robots with unusual serial port or baud rate (e.g. pioneer lx)
+    argparser->loadDefaultArguments();
+
+    // add parameters given via ROS params (see RosAriaNode constructor):
+    // @todo move to Parameters::parse() to simplify setup(), as this is not specific to robot initialization
 
     // if serial port parameter contains a ':' character, then interpret it as hostname:tcpport
     // for wireless serial connection. Otherwise, interpret it as a serial port name.
-    size_t colon_pos = serial_port.find(":");
+    size_t colon_pos = config->serial_port.get().find(":");
     if (colon_pos != std::string::npos) {
         args->add("-remoteHost"); // pass robot's hostname/IP address to Aria
-        args->add(serial_port.substr(0, colon_pos).c_str());
+        args->add(config->serial_port.get().substr(0, colon_pos).c_str());
         args->add("-remoteRobotTcpPort"); // pass robot's TCP port to Aria
-        args->add(serial_port.substr(colon_pos+1).c_str());
+        args->add(config->serial_port.get().substr(colon_pos + 1).c_str());
     } else {
-        args->add("-robotPort %s", serial_port.c_str()); // pass robot's serial port to Aria
+        args->add("-robotPort %s", config->serial_port.get().c_str()); // pass robot's serial port to Aria
     }
 
     // if a baud rate was specified in baud parameter
-    if (serial_baud != 0) {
-        args->add("-robotBaud %d", serial_baud);
+    if (config->serial_baud != 0) {
+        args->add("-robotBaud %d", config->serial_baud);
     }
 
     // turn on all ARIA debugging
-    if (debug_aria) {
+    if (config->debug_aria) {
         args->add("-robotLogPacketsReceived"); // log received packets
         args->add("-robotLogPacketsSent"); // log sent packets
         args->add("-robotLogVelocitiesReceived"); // log received velocities
         args->add("-robotLogMovementSent");
         args->add("-robotLogMovementReceived");
-        ArLog::init(ArLog::File, ArLog::Verbose, aria_log_filename.c_str(), true);
+        ArLog::init(ArLog::File, ArLog::Verbose, config->aria_log_filename.get().c_str(), true);
     }
 
     // connect to the robot
-    conn = new ArRobotConnector(argparser, robot); // warning never freed
+    conn = std::make_shared< ArRobotConnector >(argparser.get(), robot.get()); // warning never freed
     if (!conn->connectRobot()) {
         RCLCPP_ERROR(this->get_logger(), "Aria could not connect to robot! (Check ~port parameter is correct, and permissions on port device, or any errors reported above)");
         return 1;
     }
 
     // create laser connection (when configured)
-    if(publish_aria_lasers) {
-        laserConnector = new ArLaserConnector(argparser, robot, conn);
+    if(config->publish_aria_lasers) {
+        laserConnector = std::make_shared< ArLaserConnector >(argparser.get(), robot.get(), conn.get());
     }
 
     // causes ARIA to load various robot-specific hardware parameters from the robot parameter file in /usr/local/Aria/params
+    // @note    not to be confused with command line arguments parsed above
     if (!Aria::parseArgs()) {
         RCLCPP_ERROR(this->get_logger(), "Aria error parsing startup parameters!");
         return 1;
     }
 
-    read_parameters();
-
-  // // Start dynamic_reconfigure server
-  // dynamic_reconfigure_server = new dynamic_reconfigure::Server< rosaria::RosAriaConfig >;
-
-  // // Setup Parameter Minimums and maximums
-  // rosaria::RosAriaConfig dynConf_min;
-  // rosaria::RosAriaConfig dynConf_max;
-
-  // dynConf_max.trans_accel = robot->getAbsoluteMaxTransAccel() / 1000;
-  // dynConf_max.trans_decel = robot->getAbsoluteMaxTransDecel() / 1000;
-  // // TODO: Fix rqt dynamic_reconfigure gui to handle empty intervals
-  // // Until then, set unit length interval.
-  // dynConf_max.lat_accel = ((robot->getAbsoluteMaxLatAccel() > 0.0) ? robot->getAbsoluteMaxLatAccel() : 0.1) / 1000;
-  // dynConf_max.lat_decel = ((robot->getAbsoluteMaxLatDecel() > 0.0) ? robot->getAbsoluteMaxLatDecel() : 0.1) / 1000;
-  // dynConf_max.rot_accel = robot->getAbsoluteMaxRotAccel() * M_PI/180;
-  // dynConf_max.rot_decel = robot->getAbsoluteMaxRotDecel() * M_PI/180;
-
-  // dynConf_min.trans_accel = 0;
-  // dynConf_min.trans_decel = 0;
-  // dynConf_min.lat_accel = 0;
-  // dynConf_min.lat_decel = 0;
-  // dynConf_min.rot_accel = 0;
-  // dynConf_min.rot_decel = 0;
-
-  // dynConf_min.TicksMM     = 0;
-  // dynConf_max.TicksMM     = 200;
-  // dynConf_min.DriftFactor = -99999;
-  // dynConf_max.DriftFactor = 32767;
-  // dynConf_min.RevCount    = 0;
-  // dynConf_max.RevCount    = 65535;
-
-  // dynamic_reconfigure_server->setConfigMax(dynConf_max);
-  // dynamic_reconfigure_server->setConfigMin(dynConf_min);
-
-
-  // rosaria::RosAriaConfig dynConf_default;
-  // dynConf_default.trans_accel = robot->getTransAccel() / 1000;
-  // dynConf_default.trans_decel = robot->getTransDecel() / 1000;
-  // dynConf_default.lat_accel   = robot->getLatAccel() / 1000;
-  // dynConf_default.lat_decel   = robot->getLatDecel() / 1000;
-  // dynConf_default.rot_accel   = robot->getRotAccel() * M_PI/180;
-  // dynConf_default.rot_decel   = robot->getRotDecel() * M_PI/180;
-
-  // dynConf_default.TicksMM     = 0;
-  // dynConf_default.DriftFactor = -99999;
-  // dynConf_default.RevCount    = 0;
-
-  // dynamic_reconfigure_server->setConfigDefault(dynConf_default);
-
-  // dynamic_reconfigure_server->setCallback(boost::bind(&RosAriaNode::dynamic_reconfigureCB, this, _1, _2));
-
+    // read_parameters(); // reads TicksMM, DriftFactor and Revcount as dynamic_reconfigure parameters
 
     // enable the motors
     robot->enableMotors();
@@ -278,8 +187,10 @@ int RosAria2Node::setup() {
     robot->runAsync(true);
 
     // connect to lasers and create publishers
-    if(publish_aria_lasers) {
+    if(config->publish_aria_lasers) {
         RCLCPP_INFO(this->get_logger(), "Connecting to laser(s) configured in ARIA parameter file(s)...");
+
+        // laser connection logic, performs connection and instantiates a LaserPublisher instance
         if (!laserConnector->connectLasers()) {
             RCLCPP_ERROR(this->get_logger(), "Error connecting to laser(s)...");
             return 1;
@@ -453,17 +364,17 @@ void RosAria2Node::publish() {
     // -----------------------------------------------------
     // publish motors state if changed
     bool e = robot->areMotorsEnabled();
-    if (e != motors_state.data || !publish_motors_state) {
+    if (e != motors_state.data || !config->publish_motors_state) {
         RCLCPP_INFO(this->get_logger(), "publishing new motors state %d.", e);
         motors_state.data = e;
         motors_state_pub->publish(motors_state);
-        publish_motors_state = true;
+        config->publish_motors_state = true;
     }
 
     // -----------------------------------------------------
     // Publish sonar information, if enabled
     // @todo publish only PointCloud2 (PointCloud has been deprecated)
-    if (publish_sonar || publish_sonar_pointcloud2) {
+    if (config->publish_sonar || config->publish_sonar_pointcloud2) {
         sensor_msgs::msg::PointCloud cloud;  //sonar readings.
         cloud.header.stamp = position.header.stamp; //copy time.
         // sonar sensors relative to base_link
@@ -504,7 +415,7 @@ void RosAria2Node::publish() {
         RCLCPP_DEBUG(this->get_logger(), sonar_debug_info.str().c_str());
 
         // publish topic(s)
-        if (publish_sonar_pointcloud2) {
+        if (config->publish_sonar_pointcloud2) {
             sensor_msgs::msg::PointCloud2 cloud2;
             if (!sensor_msgs::convertPointCloudToPointCloud2(cloud, cloud2)) {
                 RCLCPP_WARN(this->get_logger(), "Error converting sonar point cloud message to point_cloud2 type before publishing! Not publishing this time.");
@@ -513,7 +424,7 @@ void RosAria2Node::publish() {
             }
         }
 
-        if (publish_sonar) {
+        if (config->publish_sonar) {
             sonar_pub->publish(cloud);
         }
     }  // end if publish_sonar || publish_sonar_pointcloud2
@@ -521,56 +432,56 @@ void RosAria2Node::publish() {
 
 
 void RosAria2Node::sonar_connect_cb() {
-    publish_sonar = (sonar_pub->get_subscription_count() > 0);
-    publish_sonar_pointcloud2 = (sonar_pointcloud2_pub->get_subscription_count() > 0);
+    config->publish_sonar = (sonar_pub->get_subscription_count() > 0);
+    config->publish_sonar_pointcloud2 = (sonar_pointcloud2_pub->get_subscription_count() > 0);
     robot->lock();
-    if (publish_sonar || publish_sonar_pointcloud2) {
+    if (config->publish_sonar || config->publish_sonar_pointcloud2) {
         robot->enableSonar();
-        sonar_enabled = false;
-    } else if (!publish_sonar && !publish_sonar_pointcloud2) {
+        config->sonar_enabled = false;
+    } else if (!config->publish_sonar && !config->publish_sonar_pointcloud2) {
         robot->disableSonar();
-        sonar_enabled = true;
+        config->sonar_enabled = true;
     }
     robot->unlock();
 }
 
 
-void RosAria2Node::read_parameters() {
-    // Robot Parameters. If a parameter was given and is nonzero, set it now.
-    // Otherwise, get default value for this robot (from getOrigRobotConfig()).
-    // Parameter values are stored in member variables for possible later use by the user with dynamic reconfigure.
-    robot->lock();
-    if (this->get_parameter("TicksMM", TicksMM) && TicksMM > 0) {
-        RCLCPP_INFO(this->get_logger(), "Setting robot TicksMM from ROS Parameter: %d", TicksMM);
-        robot->comInt(93, TicksMM);
-    } else {
-        TicksMM = robot->getOrigRobotConfig()->getTicksMM();
-        RCLCPP_INFO(this->get_logger(), "This robot's TicksMM parameter: %d", TicksMM);
-        // this->set_parameter( "TicksMM", TicksMM);
-    }
+// void RosAria2Node::read_parameters() {
+//     // Robot Parameters. If a parameter was given and is nonzero, set it now.
+//     // Otherwise, get default value for this robot (from getOrigRobotConfig()).
+//     // Parameter values are stored in member variables for possible later use by the user with dynamic reconfigure.
+//     robot->lock();
+//     if (this->get_parameter("TicksMM", TicksMM) && TicksMM > 0) {
+//         RCLCPP_INFO(this->get_logger(), "Setting robot TicksMM from ROS Parameter: %d", TicksMM);
+//         robot->comInt(93, TicksMM);
+//     } else {
+//         TicksMM = robot->getOrigRobotConfig()->getTicksMM();
+//         RCLCPP_INFO(this->get_logger(), "This robot's TicksMM parameter: %d", TicksMM);
+//         // this->set_parameter( "TicksMM", TicksMM);
+//     }
 
-    if (this->get_parameter("DriftFactor", DriftFactor) && DriftFactor != -99999) {
-        RCLCPP_INFO(this->get_logger(), "Setting robot DriftFactor from ROS Parameter: %d", DriftFactor);
-        robot->comInt(89, DriftFactor);
-    } else {
-        DriftFactor = robot->getOrigRobotConfig()->getDriftFactor();
-        RCLCPP_INFO(this->get_logger(), "This robot's DriftFactor parameter: %d", DriftFactor);
-        // this->set_parameter( "DriftFactor", DriftFactor);
-    }
+//     if (this->get_parameter("DriftFactor", DriftFactor) && DriftFactor != -99999) {
+//         RCLCPP_INFO(this->get_logger(), "Setting robot DriftFactor from ROS Parameter: %d", DriftFactor);
+//         robot->comInt(89, DriftFactor);
+//     } else {
+//         DriftFactor = robot->getOrigRobotConfig()->getDriftFactor();
+//         RCLCPP_INFO(this->get_logger(), "This robot's DriftFactor parameter: %d", DriftFactor);
+//         // this->set_parameter( "DriftFactor", DriftFactor);
+//     }
 
-    if (this->get_parameter("RevCount", RevCount) && RevCount > 0) {
-        RCLCPP_INFO(this->get_logger(), "Setting robot RevCount from ROS Parameter: %d", RevCount);
-        robot->comInt(88, RevCount);
-    } else {
-        RevCount = robot->getOrigRobotConfig()->getRevCount();
-        RCLCPP_INFO(this->get_logger(), "This robot's RevCount parameter: %d", RevCount);
-        // this->set_parameter( "RevCount", RevCount);
-    }
-    robot->unlock();
-}
+//     if (this->get_parameter("RevCount", RevCount) && RevCount > 0) {
+//         RCLCPP_INFO(this->get_logger(), "Setting robot RevCount from ROS Parameter: %d", RevCount);
+//         robot->comInt(88, RevCount);
+//     } else {
+//         RevCount = robot->getOrigRobotConfig()->getRevCount();
+//         RCLCPP_INFO(this->get_logger(), "This robot's RevCount parameter: %d", RevCount);
+//         // this->set_parameter( "RevCount", RevCount);
+//     }
+//     robot->unlock();
+// }
 
 
-bool RosAria2Node::enable_motors_cb(const SrvRequest, SrvResponse) {
+bool RosAria2Node::enable_motors_cb(const std_srvs::srv::Empty::Request::SharedPtr, std_srvs::srv::Empty::Response::SharedPtr) {
     RCLCPP_INFO(this->get_logger(), "Enable motors request.");
     robot->lock();
     if(robot->isEStopPressed()) {
@@ -583,7 +494,7 @@ bool RosAria2Node::enable_motors_cb(const SrvRequest, SrvResponse) {
 }
 
 
-bool RosAria2Node::disable_motors_cb(const SrvRequest, SrvResponse) {
+bool RosAria2Node::disable_motors_cb(const std_srvs::srv::Empty::Request::SharedPtr, std_srvs::srv::Empty::Response::SharedPtr) {
     RCLCPP_INFO(this->get_logger(), "Disable motors request.");
     robot->lock();
     robot->disableMotors();

@@ -5,6 +5,7 @@
 #include <memory>
 #include <stdio.h>
 #include <math.h>
+#include <type_traits>
 #ifdef ADEPT_PKG
   #include <Aria.h>
   #include <ArRobotConfigPacketReader.h>        // @todo remove after ArRobotConfig implemented in AriaCoda
@@ -29,6 +30,7 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include "rosaria2/msg/bumper_state.hpp"
 #include "laser_publisher.hpp"
+#include "dynamic_parameter.hpp"
 
 // @todo
 //      consistent naming for members
@@ -48,30 +50,18 @@
 ///                 https://docs.ros.org/en/iron/Tutorials/Intermediate/Monitoring-For-Parameter-Changes-CPP.html
 ///             Store parameters in a std::map<> instance and define a callback that can be applied to all parameters
 ///
-/// @todo       No sense to use sensor_msgs::PointCloud in 2023, should move to sensor_msgs::PointCloud2 
+/// @todo       No sense to use sensor_msgs::PointCloud in 2023, should move to sensor_msgs::PointCloud2
+///
+/// @todo       Rename to ROS2AriaNode
 ///
 class RosAria2Node : public rclcpp::Node {
   public:
     //--------------------------------------------------------------------------
-    /// @brief      Empty service request/response type aliases, for convenience and verbosity.
-    ///
-    /// @todo       Should be declared outside RosAria2Node.
-    ///
-    /// {
-    using SrvRequest = std_srvs::srv::Empty::Request::SharedPtr;
-    using SrvResponse = std_srvs::srv::Empty::Response::SharedPtr;
-    /// }
-
-
-
-
-
-    //--------------------------------------------------------------------------
     /// @brief      ROSAria2 parameter type.
     ///
-    /// @note       Centralizes configuration on a single ROSAria2Node member 
-    ///
-    /// @todo       Implement callbacks to monitor parameter for changes
+    /// @note       Centralizes full configuration on a single ROSAria2Node member.
+    ///             Use of rclcpp::DynamicParameter removes any parameter monitoring routine from ROSAria2Node.
+    ///             (cf. rclcpp::DynamicParameter)
     ///
     class Parameters {
      public:
@@ -79,60 +69,79 @@ class RosAria2Node : public rclcpp::Node {
         /// @brief      Pointer type alias.
         ///
         using Ptr = std::shared_ptr< Parameters >;
+        using ConstPtr = std::shared_ptr< const Parameters >;
 
         //----------------------------------------------------------------------
         /// @brief      Constructs a new instance.
         ///
-        Parameters() = default;
+        /// @param[in]  node  ROS2 Node
+        ///
+        explicit Parameters(rclcpp::Node* node);
 
         //----------------------------------------------------------------------
         /// @brief      Destroys the object.
         ///
-        ~Parameters() = default;
+        virtual ~Parameters() = default;
 
         //----------------------------------------------------------------------
         /// @brief      Serial port to use in robot connection.
         ///
-        std::string serial_port = "/dev/ttyUSB0";
+        rclcpp::DynamicParameter< std::string > serial_port;  //  = "/dev/ttyUSB0"; DEFAULT VALUES ASSIGNED ON CONSTRUCTOR DEFINITION
 
         //----------------------------------------------------------------------
         /// @brief      Baud rate to use in robot connection.
         ///
-        int serial_baud = 9600;
+        rclcpp::DynamicParameter< int > serial_baud;  //  = 9600; DEFAULT VALUES ASSIGNED ON CONSTRUCTOR DEFINITION
 
         //----------------------------------------------------------------------
         /// @brief      flag indicating whether sonar was enabled or disabled on the robot.
         ///
-        bool sonar_enabled;
+        rclcpp::DynamicParameter< bool > sonar_enabled;
 
-        // enable and publish sonar topics. set to true when first subscriber connects, set to false when last subscriber disconnects.
-        bool publish_sonar;
-        bool publish_sonar_pointcloud2;
+        //----------------------------------------------------------------------
+        /// @brief      enable and publish sonar topics. set to true when first subscriber connects, set to false when last subscriber disconnects.
+        rclcpp::DynamicParameter< bool > publish_sonar;
+        rclcpp::DynamicParameter< bool > publish_sonar_pointcloud2;
 
         // whether to publish aria lasers
-        bool publish_aria_lasers;
+        rclcpp::DynamicParameter< bool > publish_aria_lasers;
 
         // whether to publish motor state (ON/OFF)
-        bool publish_motors_state;
+        rclcpp::DynamicParameter< bool > publish_motors_state;
 
         // debug Aria
-        bool debug_aria;
-        std::string aria_log_filename;
+        rclcpp::DynamicParameter< bool > debug_aria;
+        rclcpp::DynamicParameter< std::string > aria_log_filename;
 
         // robot calibration Parameters (see read_parameters() function)
-        int TicksMM, DriftFactor, RevCount;  //If TicksMM or RevCount are <0, don't use. If DriftFactor is -99999, don't use (DriftFactor could be 0 or negative).
+        rclcpp::DynamicParameter< int > ticks_mm;
+        rclcpp::DynamicParameter< int > drift_factor;
+        rclcpp::DynamicParameter< int > rev_count;     //If ticks_mm or rev_count are <0, don't use. If drift_factor is -99999, don't use (drift_factor could be 0 or negative).
 
+        // // force an update from ROS Parameter server
+        // static Ptr update(const rclcpp::Node& node);
 
-        void update();
+        //----------------------------------------------------------------------
+        /// @brief      Loads parameters from a YAML file.
+        ///
+        /// @param[in]  yaml_file  Path to configuration file.
+        ///
+        /// @return     Pointer to created instance.
+        ///
+        /// @note       Does ROS2 provide some YAML parsing tool?
+        ///
+        static Ptr load(const std::string& yaml_file);
 
-        // update values from ROS Parameter server
-        static Ptr fetch(const rclcpp::Node& node);
-
-        static Ptr load(const std::string& yaml);
-
-        static Ptr create();
+     protected:
+        //----------------------------------------------------------------------
+        /// @brief      Parameter event handler shared amongst all parameters.
+        ///
+        /// @note       Optional to avoid worrying about any overhead caused by multiple
+        ///
+        /// @todo       Move to a base type  defining base interface for multi-parameter types (?)
+        ///
+        std::shared_ptr< rclcpp::ParameterEventHandler > _param_subscriber;
     };
-
 
     //--------------------------------------------------------------------------
     /// @brief      Constructs a new instance.
@@ -160,35 +169,14 @@ class RosAria2Node : public rclcpp::Node {
     int setup();
 
     //--------------------------------------------------------------------------
-    /// @brief      Callback for the 'cmd_vel' topic
-    ///
-    /// @param[in]  twist  Target twist to apply to the robot
-    ///
-    /// @note       Should be protected (?)
-    ///
-    void cmdvel_cb(const geometry_msgs::msg::Twist& twist);
-
-    //--------------------------------------------------------------------------
-    /// @brief      Callback for the watchdog timer (ensures operation only while vel commands are being published)
-    ///
-    /// @note       Should be protected (?)
-    ///
-    void cmdvel_watchdog();
-
-    //--------------------------------------------------------------------------
-    /// @brief      Callback for the 'connec_sonar' (????)
-    ///
-    void sonar_connect_cb();
-
-    //--------------------------------------------------------------------------
     /// @brief      Publish robot state (batter/motor state + sensor data).
     ///
     void publish();
 
-    //--------------------------------------------------------------------------
-    /// @brief      Reads parameters.
-    ///
-    void read_parameters();
+    // //--------------------------------------------------------------------------
+    // /// @brief      Reads parameters.
+    // ///
+    // void read_parameters();
 
     //--------------------------------------------------------------------------
     /// @brief      Configuration.
@@ -197,55 +185,47 @@ class RosAria2Node : public rclcpp::Node {
 
   protected:
 
-    enum PublisherType {
-        SONARS,
-        LASERS,
-        MOTOR_STATE,
-        BATTERY_INFO
-        // ...
-    };
-    std::array< bool, 4 /* N_PUBLISHERS*/ > _publish;
-
-    struct AriaHandle {
-        std::shared_ptr< ArRobot > robot;
-        std::shared_ptr< ArRobotConnector > connector;
-        std::shared_ptr< ArLaserConnector > laser_connector;
-    };
-
-
+    // enum PublisherType {
+    //     SONARS,
+    //     LASERS,
+    //     MOTOR_STATE,
+    //     BATTERY_INFO
+    //     // ...
+    // };
+    // std::array< bool, 4 /* N_PUBLISHERS*/ > _publish;
 
     //--------------------------------------------------------------------------
 
-    std::string serial_port;
-    int serial_baud;
+    // std::string serial_port;
+    // int serial_baud;
 
     // Aria-specific types
-    ArRobotConnector *conn;
-    ArLaserConnector *laserConnector;
-    ArRobot *robot;
+    std::shared_ptr< ArRobotConnector > conn;
+    std::shared_ptr< ArLaserConnector > laserConnector;
+    std::shared_ptr< ArRobot > robot;
 
     // Aria wrapper implementation (for verbosity)
     // aria::RobotHandle::Ptr _robot;
 
-    // flag indicating whether sonar was enabled or disabled on the robot
-    bool sonar_enabled;
+    // // flag indicating whether sonar was enabled or disabled on the robot
+    // bool sonar_enabled;
 
-    // enable and publish sonar topics. set to true when first subscriber connects, set to false when last subscriber disconnects.
-    bool publish_sonar;
-    bool publish_sonar_pointcloud2;
+    // // enable and publish sonar topics. set to true when first subscriber connects, set to false when last subscriber disconnects.
+    // bool publish_sonar;
+    // bool publish_sonar_pointcloud2;
 
-    // whether to publish aria lasers
-    bool publish_aria_lasers;
+    // // whether to publish aria lasers
+    // bool publish_aria_lasers;
 
-    // whether to publish motor state (ON/OFF)
-    bool publish_motors_state;
+    // // whether to publish motor state (ON/OFF)
+    // bool publish_motors_state;
 
-    // debug Aria
-    bool debug_aria;
-    std::string aria_log_filename;
+    // // debug Aria
+    // bool debug_aria;
+    // std::string aria_log_filename;
 
-    // robot calibration Parameters (see read_parameters() function)
-    int TicksMM, DriftFactor, RevCount;  //If TicksMM or RevCount are <0, don't use. If DriftFactor is -99999, don't use (DriftFactor could be 0 or negative).
+    // // robot calibration Parameters (see read_parameters() function)
+    // int TicksMM, DriftFactor, RevCount;  //If TicksMM or RevCount are <0, don't use. If DriftFactor is -99999, don't use (DriftFactor could be 0 or negative).
 
     // rclcpp::NodeHandle n;
     std_msgs::msg::Int8 recharge_state;
@@ -264,8 +244,6 @@ class RosAria2Node : public rclcpp::Node {
 
     rclcpp::Service< std_srvs::srv::Empty >::SharedPtr enable_srv;
     rclcpp::Service< std_srvs::srv::Empty >::SharedPtr disable_srv;
-    bool enable_motors_cb(const SrvRequest request, SrvResponse response);  // ptr types can be used instead
-    bool disable_motors_cb(const SrvRequest request, SrvResponse response);  // ptr types can be used instead
 
     rclcpp::Time veltime;
     // @todo change type to WallTimer: can a wall timer be used or only a simple timer
@@ -290,10 +268,37 @@ class RosAria2Node : public rclcpp::Node {
     std::string frame_id_bumper;
     std::string frame_id_sonar;
 
-    // dynamic_reconfigure
-    // ---> dynamic_reconfigure::Server< rosaria::RosAriaConfig > *dynamic_reconfigure_server;
+    //--------------------------------------------------------------------------
+    /// @brief      Callback for the 'enable_motors' ROS2 service.
+    ///             Enables motor control.
+    ///
+    bool enable_motors_cb(const std_srvs::srv::Empty::Request::SharedPtr, std_srvs::srv::Empty::Response::SharedPtr);  // ptr types can be used instead
 
+    //--------------------------------------------------------------------------
+    /// @brief      Callback for the 'disble_motors' ROS2 service.
+    ///             Disables motor control.
+    ///
+    bool disable_motors_cb(const std_srvs::srv::Empty::Request::SharedPtr, std_srvs::srv::Empty::Response::SharedPtr);  // ptr types can be used instead
+
+    //--------------------------------------------------------------------------
+    /// @brief      Callback for the 'cmd_vel' ROS2 topic subscription.
+    ///
+    /// @param[in]  twist  Target twist to apply to the robot
+    ///
+    void cmdvel_cb(const geometry_msgs::msg::Twist& twist);
+
+    //--------------------------------------------------------------------------
+    /// @brief      Callback for the watchdog ROS2 timer.
+    ///             Ensures operation only while vel commands are being published.
+    ///
+    void cmdvel_watchdog();
+
+    //--------------------------------------------------------------------------
+    /// @brief      Callback for the 'connec_sonar' ROS2 topic subscription.
+    ///
+    /// @todo       Currently not bound to any topic/service, fix this.
+    ///
+    void sonar_connect_cb();
 };
-
 
 #endif  // ROSARIA2_INCLUDE_ROSARIA2_ROSARIA2NODE_HPP_
