@@ -41,18 +41,18 @@ using namespace std::placeholders;     // for _1, _2
 
 RosAria2Node::Parameters::Parameters(rclcpp::Node* node) :
     _param_subscriber(std::make_shared< rclcpp::ParameterEventHandler >(node)),
-    serial_port(node,  _param_subscriber, "seria_port", "/dev/ttyUSB0"),
-    serial_baud(node, _param_subscriber, "serial_baud", 9600),
-    sonar_enabled(node, _param_subscriber, "sonar_enabled", false),
-    publish_sonar(node, _param_subscriber, "publish_sonar", false),
-    publish_sonar_pointcloud2(node, _param_subscriber, "publish_sonar_pointcloud2", false),
-    publish_aria_lasers(node, _param_subscriber, "publish_aria_lasers", false),
-    publish_motors_state(node, _param_subscriber, "publish_motors_state", false),
-    debug_aria(node, _param_subscriber, "debug_aria", false),
-    aria_log_filename(node, _param_subscriber, "aria_log_filename", "Aria.log"),
-    ticks_mm(node, _param_subscriber, "ticks_mm", -1),
-    drift_factor(node, _param_subscriber, "drif_factor", -1),
-    rev_count(node, _param_subscriber, "rev_count", -1) {
+    serial_port(node, "seria_port", "/dev/ttyUSB0"),
+    serial_baud(node, "serial_baud", 9600),
+    sonar_enabled(node, "sonar_enabled", false),
+    publish_sonar(node, "publish_sonar", false),
+    publish_sonar_pointcloud2(node, "publish_sonar_pointcloud2", false),
+    publish_aria_lasers(node, "publish_aria_lasers", false),
+    publish_motors_state(node, "publish_motors_state", false),
+    debug_aria(node, "debug_aria", false),
+    aria_log_filename(node, "aria_log_filename", "Aria.log"),
+    ticks_mm(node, "ticks_mm", -1),
+    drift_factor(node, "drif_factor", -1),
+    rev_count(node, "rev_count", -1) {
         /* ... */
 
         // parameters are declared on ROS parameter server; pre-set values on parameter server are preserved/override default values
@@ -136,7 +136,7 @@ int RosAria2Node::setup() {
 
     // if a baud rate was specified in baud parameter
     if (config->serial_baud != 0) {
-        args->add("-robotBaud %d", config->serial_baud);
+        args->add("-robotBaud %d", config->serial_baud.get());
     }
 
     // turn on all ARIA debugging
@@ -236,7 +236,7 @@ int RosAria2Node::setup() {
 
 void RosAria2Node::cmdvel_cb(const geometry_msgs::msg::Twist& twist) {
     veltime = this->now();
-    RCLCPP_INFO(this->get_logger(), "new speed: [%0.2f,%0.2f](%0.3f)", twist.linear.x*1e3, twist.angular.z, veltime.seconds() );
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "new speed: [%0.2f,%0.2f](%0.3f)", twist.linear.x*1e3, twist.angular.z, veltime.seconds() );
 
     robot->lock();
     robot->setVel(twist.linear.x * 1e3);
@@ -253,6 +253,7 @@ void RosAria2Node::cmdvel_cb(const geometry_msgs::msg::Twist& twist) {
 
 void RosAria2Node::cmdvel_watchdog() {
     // stop robot if no cmd_vel message was received for *cmdvel_timeout* seconds
+    // @todo    espose timeout as a dynamic parameter (!)
     if ((this->now() - veltime) > rclcpp::Duration(600ms)) {
         robot->lock();
         robot->setVel(0.0);
@@ -262,7 +263,7 @@ void RosAria2Node::cmdvel_watchdog() {
         robot->setRotVel(0.0);
         robot->unlock();
 
-        RCLCPP_INFO(this->get_logger(), "robot stopped");
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "robot stopped");
     }
 }
 

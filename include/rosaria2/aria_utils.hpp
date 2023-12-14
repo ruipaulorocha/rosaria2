@@ -3,10 +3,12 @@
 
 
 #include <memory>
+
+
+
 namespace aria {
 
 
-// should be a singleton class?
 
 #include <rclcpp/rclcpp.hpp>
 #ifdef ADEPT_PKG
@@ -16,6 +18,14 @@ namespace aria {
 #endif
 
 
+//------------------------------------------------------------------------------
+/// @brief      Converts ArTime instances to ROS2's rclcpp::Time type.
+///
+/// @param[in]  t     ArTime instance to convert.
+/// @param[in]  node  ROS2 node to fetch time reference.
+///
+/// @return     Instance of rclcpp::Time.
+///
 rclcpp::Time toROSTime(const ArTime& t, const rclcpp::Node& node) {
     // ARIA/ARNL times are in reference to an arbitrary starting time, not OS clock, so find the time elapsed between now and t
     // to adjust the time stamp in ROS time vs. now accordingly.
@@ -27,6 +37,10 @@ rclcpp::Time toROSTime(const ArTime& t, const rclcpp::Node& node) {
 
 
 
+//------------------------------------------------------------------------------
+/// @brief      Aria wrapper class implementing robot communication/control.
+///             Restricts calls to Aria/AriaCoda to class definition, useful in modular design of ROS applications.
+///
 class RobotHandle {
  public:
     //--------------------------------------------------------------------------
@@ -34,15 +48,104 @@ class RobotHandle {
     ///
     using Ptr = std::shared_ptr< RobotHandle >;
 
+    RobotHandle();
+    ~RobotHandle();
+
+
+
+ protected:
+    std::shared_ptr< ArRobot > _robot;
+    std::shared_ptr< ArRobotConnector > _rc;
+    std::shared_ptr< ArLaserConnector > _lc;
+
+    // @todo remove, unlikely to be needed post-initialization
+    std::shared_ptr< ArArgumentBuilder > _args;
+    std::shared_ptr< ArArgumentParser > _arg_parser;
+};
+
+
+
+RobotHandle::RobotHandle() :
+    _robot(new ArRobot()),
+    _args(new ArArgumentBuilder()),
+    _arg_parser(new ArArgumentParser(_args)) {
+        /* ... */
+}
+
+
+void init(const std::string& serial_port, size_t serial_baud, bool debug, const std::string& extra_args) {
+
+    // adds any arguments given in /etc/Aria.args.
+    // @note    useful on robots with unusual serial port or baud rate (e.g. pioneer lx)
+    _arg_parser->loadDefaultArguments();
+
+    // build argument list from ROS2 parameter server
+    // @note    if serial port parameter contains a ':' character, then interpret it as hostname:tcpport
+    //          for wireless serial connection. Otherwise, interpret it as only a serial port name/path.
+    // @todo    move to ROSAria2Node::Parameters
+    size_t colon_pos = config->serial_port.get().find(":");
+    if (colon_pos != std::string::npos) {
+        _args->add("-remoteHost"); // pass robot's hostname/IP address to Aria
+        _args->add(config->serial_port.get().substr(0, colon_pos).c_str());
+        _args->add("-remoteRobotTcpPort"); // pass robot's TCP port to Aria
+        _args->add(config->serial_port.get().substr(colon_pos + 1).c_str());
+    } else {
+        _args->add("-robotPort %s", config->serial_port.get().c_str());
+    }
+
+    // if a baud rate was specified in baud parameter
+    if (config->serial_baud != 0) {
+        _args->add("-robotBaud %d", config->serial_baud);
+    }
+
+    // turn on all ARIA debugging
+    if (config->debug_aria) {
+        _args->add("-robotLogPacketsReceived"); // log received packets
+        _args->add("-robotLogPacketsSent"); // log sent packets
+        _args->add("-robotLogVelocitiesReceived"); // log received velocities
+        _args->add("-robotLogMovementSent");
+        _args->add("-robotLogMovementReceived");
+        ArLog::init(ArLog::File, ArLog::Verbose, config->aria_log_filename.get().c_str(), true);
+    }
+
+    // add custom arguments passed in given *args*
+    _args->add(extra_args.c_str());
+
+    // connect to robot
+    // @todo check if can be constructed before arguments are parsed
+    _rc = std::make_shared< ArRobotConnector >(new ArRobotConnector(_arg_parser, _robot));
+    if (!_rc->connectRobot()) {
+        // RCLCPP_ERROR(this->get_logger(), "Aria could not connect to robot! (Check ~port parameter is correct, and permissions on port device, or any errors reported above)");
+        throw std::runtime_error("Aria could not connect to robot! (Check ~port parameter is correct, and permissions on port device, or any errors reported above)");
+    }
+
+}
+
+
+
+//------------------------------------------------------------------------------
+/// @brief      Aria wrapper class implementing robot communication/control.
+///             Restricts calls to Aria/AriaCoda to class definition, useful in modular design of ROS applications.
+///
+/// @note       Implemented as a singleton type, unsure if multiple instances of ArRobot can be run simultaneously on different serial devices.
+///             (unclear after inspecting *rosaria* code)
+///
+class GlobalRobotHandle {
+ public:
+    //--------------------------------------------------------------------------
+    /// @brief      Pointer type alias
+    ///
+    using Ptr = std::shared_ptr< GlobalRobotHandle >;
+
     //--------------------------------------------------------------------------
     /// @brief      Class instance (as pointer type)
     ///
     static Ptr instance;
 
     //--------------------------------------------------------------------------
-    /// @brief      Static named constructor
+    /// @brief      Static named constructor.
     ///
-    /// @return     { description_of_the_return_value }
+    /// @return     Pointer to new instance created, or to existing instance.
     ///
     /// @todo       Call init()?
     ///
@@ -57,14 +160,14 @@ class RobotHandle {
     //--------------------------------------------------------------------------
     /// @brief      Destroys the object.
     ///
-    virtual ~RobotHandle() = default;
+    virtual ~GlobalRobotHandle() = default;
 
     //--------------------------------------------------------------------------
     /// @brief      *no copy constructor declared*
     ///
     /// @note       Singleton types can't be copied, thus default copy constructor must be deleted.
     ///
-    RobotHandle(const RobotHandle&) = delete;
+    GlobalRobotHandle(const RobotHandle&) = delete;
 
     //--------------------------------------------------------------------------
     /// @brief      Initializes the object.
@@ -97,18 +200,18 @@ protected:
     ///
     /// @note       Singleton types can only be instantiated once, thus default constructor is private/protected.
     ///
-    RobotHandle() = default;
+    GlobalRobotHandle() = default;
 };
 
 
-RobotHandle::RobotHandle() :
+GlobalRobotHandle::GlobalRobotHandle() :
     robot(new ArRobot()) {
         // only if embedded laser connection is required
 
 }
 
 
-int RobotHandle::init(bool laser) {
+int GlobalRobotHandle::init(bool laser) {
 
     robot = std::make_shared< ArRobot >(new ArRobot());
 
@@ -141,12 +244,12 @@ int RobotHandle::init(bool laser) {
 }
 
 
-bool RobotHandle::valid() const {
+bool GlobalRobotHandle::valid() const {
     return robot;  // cast of pointer to bool is implicit
 }
 
 
-RobotHandle::operator bool() const {
+GlobalRobotHandle::operator bool() const {
     return this->valid();
 }
 
