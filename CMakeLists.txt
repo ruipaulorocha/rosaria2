@@ -34,7 +34,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES std_msgs # Add packages that above messages depend on, in this case geometry_msgs for Sphere.msg
 )
 
-# test binary
+# executables
 add_executable(${PROJECT_NAME}_node src/test.cpp src/rosaria2_node.cpp src/laser_publisher.cpp)
 target_include_directories(${PROJECT_NAME}_node
   PUBLIC
@@ -46,15 +46,30 @@ target_link_libraries(${PROJECT_NAME}_node Aria)
 # target_link_libraries(${PROJECT_NAME}_node /usr/local/lib/libAria.so)
 ament_target_dependencies(${PROJECT_NAME}_node rclcpp geometry_msgs std_msgs sensor_msgs nav_msgs std_srvs tf2 tf2_ros tf2_geometry_msgs)
 
+add_executable(emergency_stop src/emergency_stop.cpp)
+ament_target_dependencies(emergency_stop rclcpp std_msgs std_srvs)
+
 # declare generated messages as dependencies to force generation before compilation
 # cf. https://discourse.ros.org/t/ros2-how-to-use-custom-message-in-project-where-its-declared/2071
 rosidl_target_interfaces(${PROJECT_NAME}_node ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
-# install target
+# install targets
 install(TARGETS
   ${PROJECT_NAME}_node
+  emergency_stop
   DESTINATION lib/${PROJECT_NAME})
 
+install(PROGRAMS
+  scripts/prefix_ns_emergency_stop.sh
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+
+# install launch directory
+install(DIRECTORY
+  launch
+  DESTINATION share/${PROJECT_NAME}/
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

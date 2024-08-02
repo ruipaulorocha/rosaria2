@@ -263,6 +263,7 @@ class RosAria2Node : public rclcpp::Node {
     std::unique_ptr< tf2_ros::TransformBroadcaster > odom_broadcaster;
     geometry_msgs::msg::TransformStamped odom_trans;
 
+    std::string tf_prefix;
     std::string frame_id_odom;
     std::string frame_id_base_link;
     std::string frame_id_bumper;

@@ -41,7 +41,7 @@ using namespace std::placeholders;     // for _1, _2
 
 RosAria2Node::Parameters::Parameters(rclcpp::Node* node) :
     _param_subscriber(std::make_shared< rclcpp::ParameterEventHandler >(node)),
-    serial_port(node, "seria_port", "/dev/ttyUSB0"),
+    serial_port(node, "serial_port", "/dev/ttyUSB0"),
     serial_baud(node, "serial_baud", 9600),
     sonar_enabled(node, "sonar_enabled", false),
     publish_sonar(node, "publish_sonar", false),
@@ -70,16 +70,31 @@ RosAria2Node::RosAria2Node(const std::string& name) :
         // @todo check if Aria is running, initialize otherwise:
         //   Aria::init();
 
+        // further parameters
+        this->declare_parameter<std::string>("tf_prefix", std::string(""));
+        this->declare_parameter<std::string>("odom_frame_id", std::string("odom"));
+        this->declare_parameter<std::string>("base_frame_id", std::string("base_link"));
+        this->declare_parameter<std::string>("bumper_frame_id", std::string("bumper"));        
+        this->declare_parameter<std::string>("sonar_frame_id", std::string("sonar"));
+
+        this->get_parameter("tf_prefix", tf_prefix);
+        this->get_parameter("odom_frame_id", frame_id_odom);
+        this->get_parameter("base_frame_id", frame_id_base_link);
+        this->get_parameter("bumper_frame_id", frame_id_bumper);
+        this->get_parameter("sonar_frame_id", frame_id_sonar);
+
         // avertise publishers
         // @note about latching in ROS2 cf. https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Quality-of-Service-Settings.html#comparison-to-ros-1
-        pose_pub = this->create_publisher< nav_msgs::msg::Odometry >("pose", 1000);
+        pose_pub = this->create_publisher< nav_msgs::msg::Odometry >("odom", 1000);
         bumpers_pub = this->create_publisher< rosaria2::msg::BumperState >("bumper_state", 1000);
         sonar_pub = this->create_publisher< sensor_msgs::msg::PointCloud >("sonar", 50);
         sonar_pointcloud2_pub = this->create_publisher< sensor_msgs::msg::PointCloud2 >("sonar_pointcloud2", 50);
         voltage_pub = this->create_publisher< std_msgs::msg::Float64 >("battery_voltage", 1000);
-        recharge_state_pub = this->create_publisher< std_msgs::msg::Int8 >("battery_recharge_state", rclcpp::QoS(5).best_effort().transient_local());
+        //recharge_state_pub = this->create_publisher< std_msgs::msg::Int8 >("battery_recharge_state", rclcpp::QoS(5).best_effort().transient_local());
+        recharge_state_pub = this->create_publisher< std_msgs::msg::Int8 >("battery_recharge_state", 100);
         state_of_charge_pub = this->create_publisher< std_msgs::msg::Float32 >("battery_state_of_charge", 100);
-        motors_state_pub = this->create_publisher< std_msgs::msg::Bool >("motors_state", rclcpp::QoS(5).best_effort().transient_local());
+        //motors_state_pub = this->create_publisher< std_msgs::msg::Bool >("motors_state", rclcpp::QoS(5).best_effort().transient_local());
+        motors_state_pub = this->create_publisher< std_msgs::msg::Bool >("motors_state", 100);
 
         // subscribe to command topics
         cmdvel_sub = this->create_subscription< geometry_msgs::msg::Twist >("cmd_vel", 10, std::bind(&RosAria2Node::cmdvel_cb, this, _1));
@@ -290,8 +305,8 @@ void RosAria2Node::publish() {
     position.twist.twist.linear.x = robot->getVel() / 1000.0; //Aria returns velocity in mm/s.
     position.twist.twist.linear.y = robot->getLatVel() / 1000.0;
     position.twist.twist.angular.z = robot->getRotVel() * M_PI / 180;
-    position.header.frame_id = frame_id_odom;
-    position.child_frame_id = frame_id_base_link;
+    position.header.frame_id = ( tf_prefix.empty()? frame_id_odom : (tf_prefix+'/'+frame_id_odom) );
+    position.child_frame_id = ( tf_prefix.empty()? frame_id_base_link : (tf_prefix+'/'+frame_id_base_link) );
     position.header.stamp = this->now();
     pose_pub->publish(position);
     RCLCPP_DEBUG(this->get_logger(), "publish (time %f) pose x: %f, pose y: %f, pose angle: %f; linear vel x: %f, vel y: %f; angular vel z: %f",
@@ -307,8 +322,8 @@ void RosAria2Node::publish() {
     // -----------------------------------------------------
     // publish base transform (odom->base_link)
     odom_trans.header.stamp = this->now();
-    odom_trans.header.frame_id = frame_id_odom;
-    odom_trans.child_frame_id = frame_id_base_link;
+    odom_trans.header.frame_id = ( tf_prefix.empty()? frame_id_odom : (tf_prefix+'/'+frame_id_odom) );
+    odom_trans.child_frame_id = ( tf_prefix.empty()? frame_id_base_link : (tf_prefix+'/'+frame_id_base_link) );
     odom_trans.transform.translation.x = pose.getX() / 1000.0;
     odom_trans.transform.translation.y = pose.getY() / 1000.0;
     odom_trans.transform.translation.z = 0.0;
@@ -322,7 +337,7 @@ void RosAria2Node::publish() {
     unsigned char front_bumpers = (unsigned char)(stall >> 8);
     unsigned char rear_bumpers = (unsigned char)(stall);
 
-    bumpers.header.frame_id = frame_id_bumper;
+    bumpers.header.frame_id = ( tf_prefix.empty()? frame_id_bumper : (tf_prefix+'/'+frame_id_bumper) );
     bumpers.header.stamp = this->now();
 
     std::stringstream bumper_info(std::stringstream::out);
@@ -382,7 +397,7 @@ void RosAria2Node::publish() {
         sensor_msgs::msg::PointCloud cloud;  //sonar readings.
         cloud.header.stamp = position.header.stamp; //copy time.
         // sonar sensors relative to base_link
-        cloud.header.frame_id = frame_id_sonar;
+        cloud.header.frame_id = ( tf_prefix.empty()? frame_id_sonar : (tf_prefix+'/'+frame_id_sonar) );
 
         std::stringstream sonar_debug_info; // Log debugging info
         sonar_debug_info << "Sonar readings: ";
