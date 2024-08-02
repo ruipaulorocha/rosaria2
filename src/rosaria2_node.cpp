@@ -81,6 +81,9 @@ RosAria2Node::RosAria2Node(const std::string& name) :
         state_of_charge_pub = this->create_publisher< std_msgs::msg::Float32 >("battery_state_of_charge", 100);
         motors_state_pub = this->create_publisher< std_msgs::msg::Bool >("motors_state", rclcpp::QoS(5).best_effort().transient_local());
 
+        // subscribe to command topics
+        cmdvel_sub = this->create_subscription< geometry_msgs::msg::Twist >("cmd_vel", 10, std::bind(&RosAria2Node::cmdvel_cb, this, _1));
+
         // advertise enable/disable services
         enable_srv = this->create_service< std_srvs::srv::Empty >("enable_motors", std::bind(&RosAria2Node::enable_motors_cb, this, _1, _2), 10);
         disable_srv = this->create_service< std_srvs::srv::Empty >("disable_motors", std::bind(&RosAria2Node::disable_motors_cb, this, _1, _2), 10);
@@ -215,8 +218,8 @@ int RosAria2Node::setup() {
         RCLCPP_INFO(this->get_logger(), "Done creating laser publishers");
     }
 
-    // subscribe to command topics
-    cmdvel_sub = this->create_subscription< geometry_msgs::msg::Twist >("cmd_vel", 10, std::bind(&RosAria2Node::cmdvel_cb, this, _1));
+    // // subscribe to command topics
+    // cmdvel_sub = this->create_subscription< geometry_msgs::msg::Twist >("cmd_vel", 10, std::bind(&RosAria2Node::cmdvel_cb, this, _1));
 
     // register a watchdog for cmd_vel timeout
     // @note null timeout disables timer

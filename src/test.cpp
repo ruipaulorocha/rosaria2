@@ -10,7 +10,7 @@ int main(int argc, char const *argv[]) {
 
     if (rosaria_node->setup() != 0) {
         RCLCPP_FATAL(rosaria_node->get_logger(), "RosAria: ROS node setup failed... \n" );
-        return -1;
+        //return -1;
     }
 
     rclcpp::spin(rosaria_node);
