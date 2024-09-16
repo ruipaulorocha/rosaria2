@@ -247,6 +247,13 @@ int RosAria2Node::setup() {
         cmdvel_watchdog_timer = this->create_timer(100ms /* no need to wrap around a Duration instance*/, std::bind(&RosAria2Node::cmdvel_watchdog, this));
     }
 
+    if (config->sonar_enabled){
+        RCLCPP_INFO(this->get_logger(), "Sonar enabled!");
+        robot->lock();
+        robot->enableSonar();
+        robot->unlock();
+    }
+
     RCLCPP_INFO(this->get_logger(), "Setup complete");
     return 0;
 }
@@ -254,7 +261,7 @@ int RosAria2Node::setup() {
 
 void RosAria2Node::cmdvel_cb(const geometry_msgs::msg::Twist& twist) {
     veltime = this->now();
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "new speed: [%0.2f,%0.2f](%0.3f)", twist.linear.x*1e3, twist.angular.z, veltime.seconds() );
+    RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "new speed: [%0.2f,%0.2f](%0.3f)", twist.linear.x*1e3, twist.angular.z, veltime.seconds() );
 
     robot->lock();
     robot->setVel(twist.linear.x * 1e3);
@@ -271,7 +278,7 @@ void RosAria2Node::cmdvel_cb(const geometry_msgs::msg::Twist& twist) {
 
 void RosAria2Node::cmdvel_watchdog() {
     // stop robot if no cmd_vel message was received for *cmdvel_timeout* seconds
-    // @todo    espose timeout as a dynamic parameter (!)
+    // @todo    expose timeout as a dynamic parameter (!)
     if ((this->now() - veltime) > rclcpp::Duration(600ms)) {
         robot->lock();
         robot->setVel(0.0);
@@ -281,7 +288,7 @@ void RosAria2Node::cmdvel_watchdog() {
         robot->setRotVel(0.0);
         robot->unlock();
 
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "robot stopped");
+        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "robot stopped");
     }
 }
 

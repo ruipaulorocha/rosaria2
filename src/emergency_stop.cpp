@@ -95,11 +95,11 @@ EmergencyStopNode::EmergencyStopNode(rclcpp::Rate *r) : Node("emergency_stop"){
 	this->declare_parameter<std::string>("namespace", "");
 	this->get_parameter("namespace", ns);
 	RCLCPP_INFO_STREAM(this->get_logger(), "Namespace = \"" << ns << '"');
-	motors_st_sub = this->create_subscription<std_msgs::msg::Bool>(
-		( ns.empty()? "motors_state" : (ns + '/' + "motors_state") ),
-		50,
-		std::bind(&EmergencyStopNode::stateChanged, this, std::placeholders::_1)
-	);
+	// motors_st_sub = this->create_subscription<std_msgs::msg::Bool>(
+	// 	( ns.empty()? "motors_state" : (ns + '/' + "motors_state") ),
+	// 	1,
+	// 	std::bind(&EmergencyStopNode::stateChanged, this, std::placeholders::_1)
+	// );
 	clEnable = this->create_client<std_srvs::srv::Empty>(
 		( ns.empty()? "enable_motors" : (ns + '/' + "enable_motors") )
 	);
@@ -138,8 +138,10 @@ void EmergencyStopNode::run(void){
 				}
 				auto result = clDisable->async_send_request(request);
 				if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), result) ==
-							rclcpp::FutureReturnCode::SUCCESS)
-  				RCLCPP_INFO_STREAM(this->get_logger(), "Successful service call");
+							rclcpp::FutureReturnCode::SUCCESS) {
+					state = false;
+  				RCLCPP_INFO_STREAM(this->get_logger(), "Robot's motors have been DISABLED");
+  			}
   			else RCLCPP_ERROR_STREAM(this->get_logger(), "Service call NOT successful");
 			}
 			else if (c == 'G') {
@@ -151,8 +153,10 @@ void EmergencyStopNode::run(void){
 				}
 				auto result = clEnable->async_send_request(request);
 				if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), result) ==
-						rclcpp::FutureReturnCode::SUCCESS)
-  				RCLCPP_INFO_STREAM(this->get_logger(), "Successful service call");
+						rclcpp::FutureReturnCode::SUCCESS) {
+					state = true;
+  				RCLCPP_INFO_STREAM(this->get_logger(), "Robot's motors have been ENABLED");
+  			}
   			else RCLCPP_ERROR_STREAM(this->get_logger(), "Service call NOT successful");
 			}
 
