@@ -2,10 +2,12 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
     <name>rosaria2</name>
-    <version>0.0.0</version>
-    <description>TODO: Package description</description>
-    <maintainer email="joao@todo.todo">joao</maintainer>
-    <license>TODO: License declaration</license>
+    <version>2.0.0</version>
+    <description>ROS2 driver for Pioneer P3-DX2 robot platform</description>
+    <author email="rprocha@isr.uc.pt">Rui P. Rocha</author>
+    <author email="joao@todo.todo">João André</author>
+    <maintainer email="rprocha@isr.uc.pt">Rui P. Rocha</maintainer>
+    <license>MIT</license>
 
     <buildtool_depend>ament_cmake</buildtool_depend>
 
