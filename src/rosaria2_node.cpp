@@ -26,7 +26,8 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_ros/transform_listener.h>              // for tf::getPrefixParam
 #include <tf2_ros/transform_broadcaster.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+//#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 #include "rosaria2/rosaria2_node.hpp"
 
@@ -39,30 +40,8 @@ using namespace std::placeholders;     // for _1, _2
 #endif
 
 
-RosAria2Node::Parameters::Parameters(rclcpp::Node* node) :
-    _param_subscriber(std::make_shared< rclcpp::ParameterEventHandler >(node)),
-    serial_port(node, "serial_port", "/dev/ttyUSB0"),
-    serial_baud(node, "serial_baud", 9600),
-    sonar_enabled(node, "sonar_enabled", false),
-    publish_sonar(node, "publish_sonar", false),
-    publish_sonar_pointcloud2(node, "publish_sonar_pointcloud2", false),
-    publish_aria_lasers(node, "publish_aria_lasers", false),
-    publish_motors_state(node, "publish_motors_state", false),
-    debug_aria(node, "debug_aria", false),
-    aria_log_filename(node, "aria_log_filename", "Aria.log"),
-    ticks_mm(node, "ticks_mm", -1),
-    drift_factor(node, "drif_factor", -1),
-    rev_count(node, "rev_count", -1) {
-        /* ... */
-
-        // parameters are declared on ROS parameter server; pre-set values on parameter server are preserved/override default values
-}
-
-
 RosAria2Node::RosAria2Node(const std::string& name) :
     rclcpp::Node(name),
-    // runtime configuration handler
-    config(std::make_shared< RosAria2Node::Parameters >(this)),
     // control timeout (max delay between vel commands)
     cmdvel_timeout(ROSARIA2_DEFAULT_CMDVEL_TIMEOUT),
     // ...
@@ -70,13 +49,35 @@ RosAria2Node::RosAria2Node(const std::string& name) :
         // @todo check if Aria is running, initialize otherwise:
         //   Aria::init();
 
-        // further parameters
+        // ROS node parameters
+        this->declare_parameter<std::string>("serial_port", std::string("/dev/ttyUSB0"));
+        this->declare_parameter<int>("serial_baud", 9600);
+        this->declare_parameter<bool>("sonar_enabled", false);
+        this->declare_parameter<bool>("publish_sonar", false);
+        this->declare_parameter<bool>("publish_sonar_pointcloud2", false);
+        this->declare_parameter<bool>("publish_motors_state", false);
+        this->declare_parameter<bool>("debug_aria", false);
+        this->declare_parameter<std::string>("aria_log_filename", std::string("Aria.log"));
+        this->declare_parameter<int>("ticks_mm", -1);
+        this->declare_parameter<int>("drift_factor", -1);
+        this->declare_parameter<int>("rev_count", -1);
         this->declare_parameter<std::string>("tf_prefix", std::string(""));
         this->declare_parameter<std::string>("odom_frame_id", std::string("odom"));
         this->declare_parameter<std::string>("base_frame_id", std::string("base_link"));
         this->declare_parameter<std::string>("bumper_frame_id", std::string("bumper"));        
         this->declare_parameter<std::string>("sonar_frame_id", std::string("sonar"));
 
+        this->get_parameter("serial_port", serial_port);
+        this->get_parameter("serial_baud", serial_baud);
+        this->get_parameter("sonar_enabled", sonar_enabled);
+        this->get_parameter("publish_sonar", publish_sonar);
+        this->get_parameter("publish_sonar_pointcloud2", publish_sonar_pointcloud2);
+        this->get_parameter("publish_motors_state", publish_motors_state);
+        this->get_parameter("debug_aria", debug_aria);
+        this->get_parameter("aria_log_filename", aria_log_filename);
+        this->get_parameter("ticks_mm", ticks_mm);
+        this->get_parameter("drift_factor", drift_factor);
+        this->get_parameter("rev_count", rev_count);
         this->get_parameter("tf_prefix", tf_prefix);
         this->get_parameter("odom_frame_id", frame_id_odom);
         this->get_parameter("base_frame_id", frame_id_base_link);
@@ -100,8 +101,8 @@ RosAria2Node::RosAria2Node(const std::string& name) :
         cmdvel_sub = this->create_subscription< geometry_msgs::msg::Twist >("cmd_vel", 10, std::bind(&RosAria2Node::cmdvel_cb, this, _1));
 
         // advertise enable/disable services
-        enable_srv = this->create_service< std_srvs::srv::Empty >("enable_motors", std::bind(&RosAria2Node::enable_motors_cb, this, _1, _2), 10);
-        disable_srv = this->create_service< std_srvs::srv::Empty >("disable_motors", std::bind(&RosAria2Node::disable_motors_cb, this, _1, _2), 10);
+        enable_srv = this->create_service< std_srvs::srv::Empty >("enable_motors", std::bind(&RosAria2Node::enable_motors_cb, this, _1, _2)); //, 10);
+        disable_srv = this->create_service< std_srvs::srv::Empty >("disable_motors", std::bind(&RosAria2Node::disable_motors_cb, this, _1, _2)); //, 10);
 
         // initialize transform broadcaster
         odom_broadcaster = std::make_unique< tf2_ros::TransformBroadcaster >(*this);
@@ -142,29 +143,29 @@ int RosAria2Node::setup() {
 
     // if serial port parameter contains a ':' character, then interpret it as hostname:tcpport
     // for wireless serial connection. Otherwise, interpret it as a serial port name.
-    size_t colon_pos = config->serial_port.get().find(":");
+    size_t colon_pos = serial_port.find(":");
     if (colon_pos != std::string::npos) {
         args->add("-remoteHost"); // pass robot's hostname/IP address to Aria
-        args->add(config->serial_port.get().substr(0, colon_pos).c_str());
+        args->add(serial_port.substr(0, colon_pos).c_str());
         args->add("-remoteRobotTcpPort"); // pass robot's TCP port to Aria
-        args->add(config->serial_port.get().substr(colon_pos + 1).c_str());
+        args->add(serial_port.substr(colon_pos + 1).c_str());
     } else {
-        args->add("-robotPort %s", config->serial_port.get().c_str()); // pass robot's serial port to Aria
+        args->add("-robotPort %s", serial_port.c_str()); // pass robot's serial port to Aria
     }
 
     // if a baud rate was specified in baud parameter
-    if (config->serial_baud != 0) {
-        args->add("-robotBaud %d", config->serial_baud.get());
+    if (serial_baud != 0) {
+        args->add("-robotBaud %d", serial_baud);
     }
 
     // turn on all ARIA debugging
-    if (config->debug_aria) {
+    if (debug_aria) {
         args->add("-robotLogPacketsReceived"); // log received packets
         args->add("-robotLogPacketsSent"); // log sent packets
         args->add("-robotLogVelocitiesReceived"); // log received velocities
         args->add("-robotLogMovementSent");
         args->add("-robotLogMovementReceived");
-        ArLog::init(ArLog::File, ArLog::Verbose, config->aria_log_filename.get().c_str(), true);
+        ArLog::init(ArLog::File, ArLog::Verbose, aria_log_filename.c_str(), true);
     }
 
     // connect to the robot
@@ -175,7 +176,7 @@ int RosAria2Node::setup() {
     }
 
     // create laser connection (when configured)
-    if(config->publish_aria_lasers) {
+    if(publish_aria_lasers) {
         laserConnector = std::make_shared< ArLaserConnector >(argparser.get(), robot.get(), conn.get());
     }
 
@@ -205,7 +206,7 @@ int RosAria2Node::setup() {
     robot->runAsync(true);
 
     // connect to lasers and create publishers
-    if(config->publish_aria_lasers) {
+    if(publish_aria_lasers) {
         RCLCPP_INFO(this->get_logger(), "Connecting to laser(s) configured in ARIA parameter file(s)...");
 
         // laser connection logic, performs connection and instantiates a LaserPublisher instance
@@ -244,10 +245,11 @@ int RosAria2Node::setup() {
     if (cmdvel_timeout_param > 0.0) {
         // @todo expose timer frequency as a parameter?
         // @todo check if wall timer vs timer for watchdog
-        cmdvel_watchdog_timer = this->create_timer(100ms /* no need to wrap around a Duration instance*/, std::bind(&RosAria2Node::cmdvel_watchdog, this));
+        //cmdvel_watchdog_timer = this->create_timer(100ms /* no need to wrap around a Duration instance*/, std::bind(&RosAria2Node::cmdvel_watchdog, this));
+        cmdvel_watchdog_timer = this->create_wall_timer(100ms, std::bind(&RosAria2Node::cmdvel_watchdog, this));
     }
 
-    if (config->sonar_enabled){
+    if (sonar_enabled){
         RCLCPP_INFO(this->get_logger(), "Sonar enabled!");
         robot->lock();
         robot->enableSonar();
@@ -259,7 +261,10 @@ int RosAria2Node::setup() {
 }
 
 
-void RosAria2Node::cmdvel_cb(const geometry_msgs::msg::Twist& twist) {
+//void RosAria2Node::cmdvel_cb(const geometry_msgs::msg::Twist& twist) {
+void RosAria2Node::cmdvel_cb(const geometry_msgs::msg::Twist::SharedPtr msg) {
+    const geometry_msgs::msg::Twist twist = *msg;
+
     veltime = this->now();
     RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "new speed: [%0.2f,%0.2f](%0.3f)", twist.linear.x*1e3, twist.angular.z, veltime.seconds() );
 
@@ -390,17 +395,17 @@ void RosAria2Node::publish() {
     // -----------------------------------------------------
     // publish motors state if changed
     bool e = robot->areMotorsEnabled();
-    if (e != motors_state.data || !config->publish_motors_state) {
+    if (e != motors_state.data || !publish_motors_state) {
         RCLCPP_INFO(this->get_logger(), "publishing new motors state %d.", e);
         motors_state.data = e;
         motors_state_pub->publish(motors_state);
-        config->publish_motors_state = true;
+        publish_motors_state = true;
     }
 
     // -----------------------------------------------------
     // Publish sonar information, if enabled
     // @todo publish only PointCloud2 (PointCloud has been deprecated)
-    if (config->publish_sonar || config->publish_sonar_pointcloud2) {
+    if (publish_sonar || publish_sonar_pointcloud2) {
         sensor_msgs::msg::PointCloud cloud;  //sonar readings.
         cloud.header.stamp = position.header.stamp; //copy time.
         // sonar sensors relative to base_link
@@ -441,7 +446,7 @@ void RosAria2Node::publish() {
         RCLCPP_DEBUG(this->get_logger(), sonar_debug_info.str().c_str());
 
         // publish topic(s)
-        if (config->publish_sonar_pointcloud2) {
+        if (publish_sonar_pointcloud2) {
             sensor_msgs::msg::PointCloud2 cloud2;
             if (!sensor_msgs::convertPointCloudToPointCloud2(cloud, cloud2)) {
                 RCLCPP_WARN(this->get_logger(), "Error converting sonar point cloud message to point_cloud2 type before publishing! Not publishing this time.");
@@ -450,7 +455,7 @@ void RosAria2Node::publish() {
             }
         }
 
-        if (config->publish_sonar) {
+        if (publish_sonar) {
             sonar_pub->publish(cloud);
         }
     }  // end if publish_sonar || publish_sonar_pointcloud2
@@ -458,15 +463,15 @@ void RosAria2Node::publish() {
 
 
 void RosAria2Node::sonar_connect_cb() {
-    config->publish_sonar = (sonar_pub->get_subscription_count() > 0);
-    config->publish_sonar_pointcloud2 = (sonar_pointcloud2_pub->get_subscription_count() > 0);
+    publish_sonar = (sonar_pub->get_subscription_count() > 0);
+    publish_sonar_pointcloud2 = (sonar_pointcloud2_pub->get_subscription_count() > 0);
     robot->lock();
-    if (config->publish_sonar || config->publish_sonar_pointcloud2) {
+    if (publish_sonar || publish_sonar_pointcloud2) {
         robot->enableSonar();
-        config->sonar_enabled = false;
-    } else if (!config->publish_sonar && !config->publish_sonar_pointcloud2) {
+        sonar_enabled = false;
+    } else if (!publish_sonar && !publish_sonar_pointcloud2) {
         robot->disableSonar();
-        config->sonar_enabled = true;
+        sonar_enabled = true;
     }
     robot->unlock();
 }
